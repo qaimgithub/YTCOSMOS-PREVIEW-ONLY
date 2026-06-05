@@ -154,6 +154,16 @@ loader.load(TEX.stars,t=>{t.encoding=THREE.sRGBEncoding;starMat.map=t;starMat.co
 const starSphere=new THREE.Mesh(new THREE.SphereGeometry(2000,48,48),starMat);
 scene.add(starSphere);
 
+// Mid-field parallax dust — a sparse, faint near layer sitting BEHIND the planets so
+// any lateral camera move produces real motion parallax against the infinite starfield
+// (primary depth cue; helps guarantee no-static-frame). Kept behind z<-6 so it never
+// occludes a world.
+const DUST_N=320, dustPos=new Float32Array(DUST_N*3);
+for(let i=0;i<DUST_N;i++){ dustPos[i*3]=(Math.random()*2-1)*9.5; dustPos[i*3+1]=(Math.random()*2-1)*9.5; dustPos[i*3+2]=-6-Math.random()*24; }
+const dustGeo=new THREE.BufferGeometry(); dustGeo.setAttribute('position',new THREE.BufferAttribute(dustPos,3));
+const dustMat=new THREE.PointsMaterial({color:0x9fb6d8,size:0.04,transparent:true,opacity:0.42,depthWrite:false,blending:THREE.AdditiveBlending,sizeAttenuation:true});
+const dust=new THREE.Points(dustGeo,dustMat); scene.add(dust);
+
 // ════════════════ ATMOSPHERE — sun-lit volumetric scattering shells ════════════════
 // Two additive shells (Rayleigh inner + Mie/halo outer). Brightness follows the
 // sun-lit hemisphere (crescent on the day limb, dark on night) so it reads 3D,
@@ -287,8 +297,9 @@ function chainS(t){
   if(t<=REVEAL_T[0]) return 0;
   for(let k=0;k<REVEAL_T.length-1;k++){
     if(t>=REVEAL_T[k]&&t<REVEAL_T[k+1]){
-      const u=(t-REVEAL_T[k])/(REVEAL_T[k+1]-REVEAL_T[k]), hold=0.42;   // shorter dwell → more continuous travel
-      return k+ss(clamp((u-hold)/(1-hold),0,1));
+      const u=(t-REVEAL_T[k])/(REVEAL_T[k+1]-REVEAL_T[k]), hold=0.30;   // short dwell → fast paced, more continuous travel
+      const x=clamp((u-hold)/(1-hold),0,1);
+      return k+(1-Math.pow(1-x,3.2));   // expo-out: leave fast, decelerate into the next world (snappy arrival)
     }
   }
   return LAST_I;     // dwell on Earth
@@ -311,10 +322,15 @@ function railTarget(t){
   let dist=rr*4.6+1.9 + travel*2.8;                  // pull back to travel, push in to dwell
   const home=k0===LAST_I?ss((t-LAST_T)/3.2):0;       // HOMECOMING ease once on Earth
   dist*=lerp(1.0,0.8,home);                          // gentle final push-in
+  // PATTERN INTERRUPT: snappy push-in (expo-out arrival) on the Venus "spins backwards"
+  // beat — the most counter-intuitive fact, used to re-engage before the home stretch.
+  const vpunch=(k0===6)?Math.sin(clamp((t-30.6)/2.0,0,1)*Math.PI):0;   // push-in PULSE that returns to 0 (no snap leaving Venus)
+  dist*=lerp(1.0,0.86,vpunch);
   const orbitAmp=(1-travel)*lerp(0.85,0.15,home);    // orbit while dwelling; calm at home
-  const orbit=t*0.16+k0*1.7;
+  const orbit=t*0.24+s*1.7;                          // CONTINUOUS phase (s, not k0) → no snap at reveals; faster orbit = more pace
+  const antic=Math.sin(clamp(fr/0.2,0,1)*Math.PI)*rr*0.16;   // ANTICIPATION: a tiny lift before each downward glide commits
   const camX=fx+Math.sin(orbit)*dist*0.30*orbitAmp;
-  const camY=fy+Math.sin(t*0.3)*rr*0.05;
+  const camY=fy+antic+Math.sin(t*0.3)*rr*0.05;
   const camZ=fz+dist+Math.cos(orbit*0.6)*dist*0.10*orbitAmp;
   const fovH=fov+home*5.0;                                               // DOLLY-ZOOM: push in + widen on arrival home (realization spike)
   const lift=FRAME_LIFT*dist*Math.tan(THREE.MathUtils.degToRad(fovH)/2); // drop the world into the lower third
@@ -357,6 +373,7 @@ function checkSync(t){ for(let i=0;i<SYNC.length;i++){ if(!syncFired[i]&&t>=SYNC
 function updateVisuals(t){
   for(const p of PLANETS){ const ang=p.dir*(SPIN_K/p.period)*t; p._mesh.rotation.y=ang; if(p._cloud) p._cloud.rotation.y=ang*1.15+0.2; }
   starSphere.rotation.y=t*0.003;
+  dust.rotation.z=t*0.006; dust.position.y=Math.sin(t*0.05)*0.25;   // dust never frozen (no-static-frame)
   applyCamera(t);
   if(scVisible){ const o=clamp(rSpr(t-scSince,16,170,1),0,1); scEl.style.opacity=o; scEl.style.transform='translateY('+(1-o)*-10+'px)'; }
   else { scEl.style.opacity=0; }
