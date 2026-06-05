@@ -199,7 +199,7 @@ function makeAtmosphere(radius,color,strength){
 // Laid out as a portrait zigzag column that fits entirely inside the 9:16 frame.
 // Opening lineup = single centered column (portrait-friendly); reveals fly down it.
 // `days` = rotation period expressed in Earth days (shown under each planet in the hook).
-const SPIN_K=6.0;
+const VSPIN_BASE=2.4, VSPIN_REF=30, VSPIN_EXP=0.22;   // FAST helicopter-blade spin; gas giants fastest, but every world clearly turns
 const PLANETS=[
   {name:'jupiter', days:'0.4 DAYS', side:'L', tex:TEX.jupiter, r:0.92, pos:[-2.3, 6.3,-1], period:9.93,  dir:1,  tilt:3,    atmo:[0.55,0.6,0.8],  aStr:0.7, ring:false,clouds:false},
   {name:'saturn',  days:'0.4 DAYS', side:'R', tex:TEX.saturn,  r:0.72, pos:[ 2.3, 4.5,-1], period:10.66, dir:1,  tilt:26.7, atmo:[0.85,0.72,0.5], aStr:0.6, ring:true, clouds:false},
@@ -297,9 +297,12 @@ function chainS(t){
   if(t<=REVEAL_T[0]) return 0;
   for(let k=0;k<REVEAL_T.length-1;k++){
     if(t>=REVEAL_T[k]&&t<REVEAL_T[k+1]){
-      const u=(t-REVEAL_T[k])/(REVEAL_T[k+1]-REVEAL_T[k]), hold=0.30;   // short dwell → fast paced, more continuous travel
-      const x=clamp((u-hold)/(1-hold),0,1);
-      return k+(1-Math.pow(1-x,3.2));   // expo-out: leave fast, decelerate into the next world (snappy arrival)
+      // Hold+orbit on world k (it spins fast → the hold is NOT static), then a quick
+      // SNAPPY transition into k+1 that arrives right on its reveal beat.
+      const seg=REVEAL_T[k+1]-REVEAL_T[k], moveDur=Math.min(1.35,seg*0.55), ms=REVEAL_T[k+1]-moveDur;
+      if(t<ms) return k;
+      const x=clamp((t-ms)/moveDur,0,1);
+      return k+(1-Math.pow(1-x,3));   // expo-out: fast launch, decelerate into the world
     }
   }
   return LAST_I;     // dwell on Earth
@@ -308,8 +311,9 @@ function chainS(t){
 // t=0) so the camera is already drifting/pushing in on frame 1, never a static start.
 function wideTarget(t){
   const x=clamp(t/FIRST_T,0,1), u=1-(1-x)*(1-x);     // ease-out: fast off the line, settles into the rail
-  const cy=1.5-1.25*u;
-  return {p:new THREE.Vector3(0.0,cy,20.8-2.6*u), l:new THREE.Vector3(0,cy*0.35,-1), fov:lerp(50,44,u)};
+  const cy=2.2-2.0*u;
+  const sweep=Math.sin(x*Math.PI)*2.6;               // lateral arc across the lineup (parallax + motion) → recentre into the rail
+  return {p:new THREE.Vector3(sweep,cy,21.8-4.2*u), l:new THREE.Vector3(sweep*0.28,cy*0.3,-1), fov:lerp(53,43,u)};
 }
 // The rail: dwell+orbit at each world, pull back+widen to glide to the next, push in to settle on home.
 function railTarget(t){
@@ -371,7 +375,7 @@ function checkSync(t){ for(let i=0;i<SYNC.length;i++){ if(!syncFired[i]&&t>=SYNC
 
 // ════════════════ VISUAL UPDATE ════════════════
 function updateVisuals(t){
-  for(const p of PLANETS){ const ang=p.dir*(SPIN_K/p.period)*t; p._mesh.rotation.y=ang; if(p._cloud) p._cloud.rotation.y=ang*1.15+0.2; }
+  for(const p of PLANETS){ const ang=p.dir*VSPIN_BASE*Math.pow(VSPIN_REF/p.period,VSPIN_EXP)*t; p._mesh.rotation.y=ang; if(p._cloud) p._cloud.rotation.y=ang*1.1+0.2; }
   starSphere.rotation.y=t*0.003;
   dust.rotation.z=t*0.006; dust.position.y=Math.sin(t*0.05)*0.25;   // dust never frozen (no-static-frame)
   applyCamera(t);
@@ -394,22 +398,27 @@ window.renderFrameAt=function(n){
 // ════════════════ AUDIO INIT (Rule 3 — exact pattern) ════════════════
 let audioEl=null;
 function initAudioB64(){ if(!AUDIO_B64||AUDIO_B64.length<100) return; const b=new Audio('data:audio/mp3;base64,'+AUDIO_B64); b.play().then(()=>{audioEl=b;}).catch(()=>{}); }
-function initAudio(){ const f=new Audio('./narration.mp3'); f.play().then(()=>{audioEl=f;}).catch(()=>initAudioB64()); }
+// Hosted preview has no ./narration.mp3 — go straight to embedded audio. (Fetching the
+// missing file first delayed playback while the clock advanced, then audio started at 0
+// and rotation snapped backward — the 'reset' hiccup.)
+function initAudio(){ initAudioB64(); }
 
 // ════════════════ MAIN LOOP ════════════════
-let running=false,lastFrameTime=null,loopStartTime=null;
+let running=false,lastFrameTime=null,loopStartTime=null,lastViz=0;
 function loop(now){
   if(!running) return; requestAnimationFrame(loop);
   if(loopStartTime===null) loopStartTime=now; lastFrameTime=now;
   const clockT=(now-loopStartTime)/1000;
-  const audioT=audioEl?audioEl.currentTime:clockT;
+  let audioT=audioEl?audioEl.currentTime:clockT;
+  if(audioT<lastViz-0.05) audioT=lastViz;   // guard: never snap time backward on the clock→audio handoff
+  lastViz=audioT;
   checkSync(audioT); updateVisuals(audioT);
 }
 const _ov=document.getElementById('playOverlay');
 function startPlayback(){
   if(running) return;
   _ov.style.display='none'; syncFired=new Array(SYNC.length).fill(false); scVisible=false;
-  loopStartTime=null; initAudio(); running=true; lastFrameTime=null; requestAnimationFrame(loop);
+  loopStartTime=null; lastViz=0; initAudio(); running=true; lastFrameTime=null; requestAnimationFrame(loop);
 }
 // Forgiving start: any tap / click / key anywhere on the page begins playback
 // (a single small button hit-area is easy to miss, esp. on mobile).
